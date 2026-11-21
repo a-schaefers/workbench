@@ -8699,6 +8699,30 @@ class Lane(Base):
                              capture_output=True, text=True, timeout=20)
         self.assertEqual(out.returncode, 0, out.stderr)
 
+    @unittest.skipUnless(lane.abi(), "needs Landlock")
+    def test_a_bench_replays_git_works_in_the_lane_and_the_rest_of_the_state_stays_hidden(self):
+        # #858: a replay's repo is a clone under bench/runs in workbench's state, hidden from the
+        # lane, so the agent's git failed "gitfile does not point to a valid repository" in every
+        # replay, both arms of every A/B
+        g = lambda *a: subprocess.run(["git", *a], check=True, capture_output=True)  # noqa: E731
+        repo = store.home() / "bench" / "runs" / "r1" / "t-replay" / "repo"
+        g("init", "-q", str(repo))
+        (repo / "a.txt").write_text("a\n")
+        g("-C", str(repo), "add", ".")
+        g("-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+        task = self.bare_task("t-replay", repo)
+        g("-C", str(repo), "worktree", "add", "-q", str(task.dir / "worktree"))
+        (store.home() / "notify.jsonl").write_text("{}\n")
+        r = context.readable(task)
+        self.assertTrue([p for p in r if os.path.realpath(p) in (os.path.realpath(repo), os.path.realpath(repo / ".git"))])
+        out = subprocess.run(lane.wrap(context.writable(task), ["git", "-C", str(task.dir / "worktree"),
+                                                                "status", "--short"], r),
+                             capture_output=True, text=True, timeout=20)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        home = os.path.realpath(store.home())      # the rest of the state stays hidden (the test's
+        self.assertFalse([p for p in r if os.path.realpath(p) in (home, os.path.join(home, "bench"),
+                                                                  os.path.join(home, "notify.jsonl"))])  # is in /tmp)
+
     def test_a_repo_that_holds_secrets_keeps_them_out_and_the_home_is_refused(self):
         home = self.fake_home()
         for d in (".config/gh", ".config/app"):

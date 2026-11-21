@@ -1754,7 +1754,9 @@ deliberately hostile process (the 2026-11-16 audit's list of what it can't stop 
   `WB_MODELS`, `WB_IMAGES`, `WB_AUDIO` moved its files): the audit read the chat token from a lane, which
   would let an agent post to Claude as the user. Of `$WB_HOME`, the task's own directory and
   `rules/<task>/` stay readable (its prompts and spec; its OpenCode config, instructions and git
-  shim). Left readable on purpose: `.npmrc` and
+  shim), and so does the task's repo with its git directory when it lies there (`repo_dirs`): a
+  bench replay's is a clone in `bench/runs/<run>/<task>/repo`, and with it hidden the agent's git
+  failed in every replay, "gitfile does not point to a valid repository" (#858). Left readable on purpose: `.npmrc` and
   `.yarnrc.yml` (the package managers read them to install) and OpenCode's `auth.json` and
   session database in `.local/share/opencode` (OpenCode runs in the lane and needs them: keep
   cloud keys out of it). Of the home directory's own entries only the dotfiles and

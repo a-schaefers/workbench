@@ -1580,8 +1580,13 @@ def readable(task: store.Task) -> list[str] | None:
     # puts it in ~/.claude/plugins, the 2026-11-16 audit), and of workbench's state the task's own
     # directory (its prompts, the ask server's spec) and its rules (its OpenCode config, its
     # instructions, the git shim), read-only; the rest stays hidden
-    own = (PKG_ROOT, task.dir, rules_dir(task))
-    inner = {r for r in map(os.path.realpath, own) if any(_under(r, h) or r == h for h in hidden)}
+    # The task's repo and git directory too when they are workbench's own: a bench replay's repo is
+    # a clone in bench/runs/<run>/<task>/repo, so in every replay the agent's `git status` and
+    # `git diff` failed, "gitfile does not point to a valid repository", and the agent spent its
+    # round's calls on a git it took for broken (found in the probe pilot, 2026-11-21, #858)
+    own = (PKG_ROOT, task.dir, rules_dir(task), *repo_dirs(task))
+    inner = {r for r in map(os.path.realpath, own) if r not in hidden
+             and any(_under(r, h) for h in hidden)}
     only_kept = {os.path.realpath(p) for p in ONLY_KEPT}
     # and WSL's drives wherever they are mounted: at /c (wsl.conf's `[automount] root = /`) a
     # drive was read whole, so the agent could exec cmd.exe by its path, outside the lane (#914)
