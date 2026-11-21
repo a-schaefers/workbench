@@ -3293,10 +3293,14 @@ def cmd_stats(a):
     head, shown = stats.summary(f), f.get("model_lines") or {}
     # the models OpenCode has now, as the Stats tab shows them; --all every one that ran (#638)
     only = None if a.all or not shown else {v for x in shown.get("lines", []) for v in x["variants"]}
-    old = shown.get("older") if only is not None else None
+    # the newest stats.STATS_MODEL_LINES of them, the rest counted on one line (2026-11-21)
+    more, old = (shown.get("more"), shown.get("older")) if only is not None else (None, None)
+    rest = "; ".join(([f"{more['models']} more model(s) used in the last {stats.OLD_DAYS} days: "
+                       f"{more['tasks']} task(s)"] if more else [])
+                     + ([f"{old['models']} older model(s), retired or idle {stats.OLD_DAYS}+ days: "
+                         f"{old['tasks']} task(s)"] if old else []))
     print("\n".join(head + [""] if head else []) + results.table(only)
-          + (f"\n{old['models']} older model(s), retired or idle {stats.OLD_DAYS}+ days: "
-             f"{old['tasks']} task(s) (wb stats --all)" if old else ""))
+          + (f"\n{rest} (wb stats --all)" if rest else ""))
 
 
 def cmd_savings(a):

@@ -190,10 +190,16 @@ def _models(rows: list[dict]) -> dict:
 # them variants of a third and one long gone. Shown: the models OpenCode has now, a variant folded
 # under its source, the most recently used first; the rest on one line. `models` keeps them all.
 OLD_DAYS = 90
+# At most this many of them (the owner, 2026-11-21): a machine with a model a week tried for a
+# year drew a line each, and the tab's menu sat a long scroll below a new user's first look.
+# The rest are counted in `more`; `wb stats --all` and `wb models` still show every one.
+STATS_MODEL_LINES = 3
 
 
 def _model_lines(rows: list[dict], now: float) -> dict | None:
-    """{"lines": [{model, variants, windows, last, …_model_stats}], "older": {models, tasks}}."""
+    """{"lines": [{model, variants, windows, last, …_model_stats}], "more": {models, tasks},
+    "older": {models, tasks}}: the newest STATS_MODEL_LINES lines, the other recent ones in
+    `more`, the retired and long-idle in `older` (each only when it counts any)."""
     from . import models
     try:
         found = models.discover()
@@ -226,13 +232,19 @@ def _model_lines(rows: list[dict], now: float) -> dict | None:
             older["tasks"] += len(rs)
             continue
         newest = max(rs, key=lambda r: r.get("ts") or 0)["model"]
-        lines.append({"model": b, "variants": sorted({r["model"] for r in rs}),
+        # a configured variant that ran nothing yet folds here too: its optimized window and
+        # bench run are this line's, not "1 more" beside it (2026-11-21)
+        ids = {r["model"] for r in rs} | {m for m in found if base(m) == b}
+        lines.append({"model": b, "variants": sorted(ids),
                       "windows": sorted({r["window"] for r in rs if isinstance(r.get("window"), int)}),
                       "last": last, **_model_stats(newest, rs)})
     lines.sort(key=lambda x: -x["last"])
     if not lines and not older["models"]:
         return None
-    return {"lines": lines, **({"older": older} if older["models"] else {})}
+    rest = lines[STATS_MODEL_LINES:]
+    more = {"models": len(rest), "tasks": sum(x["tasks"] for x in rest)}
+    return {"lines": lines[:STATS_MODEL_LINES], **({"more": more} if rest else {}),
+            **({"older": older} if older["models"] else {})}
 
 
 def _renames(over: dict, model_id: str) -> list[str]:

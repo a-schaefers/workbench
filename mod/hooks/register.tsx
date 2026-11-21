@@ -837,9 +837,16 @@ export function cardName(name: string): string {
 const RACK_MARK: Record<string, string> = { resident: '●', cpu: '●', split: '◑', idle: '○', "can't run": '✗', remote: '⇢' }
 const RACK_COLOR: Record<string, string> = { resident: 'success', cpu: 'success', split: 'warning', "can't run": 'error' }
 
+// The rack rows folded into one line when more than RACK_FOLD_MIN of them (`wb top`'s top.FOLD):
+// the owner, 2026-11-21: a machine with many models tried drew a row each, and the tab's menu sat
+// a long scroll below a new user's first look. `wb top` and `wb models` still list every one.
+const RACK_FOLD = new Set(['idle', "can't run", 'remote'])
+const RACK_FOLD_MIN = 2
+
 // The live view as lines of coloured parts: each GPU (memory and busy as bars, watts, busy's
-// sparkline), what runs now, the rack (every model: where it is, its speeds, its load time, the
-// task on it) and the queue. Nothing is said for what a platform can't tell.
+// sparkline), what runs now, the rack (every model resident or with a task: where it is, its
+// speeds, its load time, the task on it; the idle, can't-run and remote ones on one line past
+// RACK_FOLD_MIN) and the queue. Nothing is said for what a platform can't tell.
 export function liveLines(t: WbTop, why = ''): { color?: string; dim?: boolean; bold?: boolean; text: string }[][] {
   const s = t.snap
   // `why`: what `wb top` said as it ended, once it has failed twice: "Reading…" was all ever said (#553)
@@ -871,7 +878,10 @@ export function liveLines(t: WbTop, why = ''): { color?: string; dim?: boolean; 
     out.push([{ color: 'claude', text: '▶ ' }, { bold: true, text: `${r.task} ` }, { dim: true, text: `${r.label || r.model} · ${parts.join(' · ')}` }])
   }
   if (!(s.running ?? []).length) out.push([{ dim: true, text: 'Nothing running.' }])
-  for (const m of (s.rack ?? []) as Row[]) {
+  const rack = (s.rack ?? []) as Row[]
+  const folds = rack.filter(m => RACK_FOLD.has(m.state) && !m.tasks?.length)
+  const fold = folds.length > RACK_FOLD_MIN ? folds.length : 0
+  for (const m of fold ? rack.filter(m => !folds.includes(m)) : rack) {
     const where = m.state === 'cpu' && typeof m.cpu_bytes === 'number' ? ` ${gib(m.cpu_bytes)} GiB in RAM`
       : typeof m.gpu_bytes === 'number'
         ? ` ${gib(m.gpu_bytes)} GiB on the GPU${m.cpu_bytes ? ` + ${gib(m.cpu_bytes)} on the CPU` : ''}` : ''
@@ -882,6 +892,7 @@ export function liveLines(t: WbTop, why = ''): { color?: string; dim?: boolean; 
       { dim: true, text: facts.length ? ` · ${facts.join(' · ')}` : '' },
       ...(m.tasks?.length ? [{ color: 'claude', text: ` ← ${m.tasks.join(', ')}` }] : [])])
   }
+  if (fold) out.push([{ dim: true, text: `+${fold} more models idle, can't run or remote (wb top)` }])
   for (const q of (s.queue ?? []) as Row[])
     out.push([{ color: 'warning', text: '◌ ' }, { text: `${q.task} ` },
       { dim: true, text: `waits for the GPU${typeof q.waited_s === 'number' ? ` (${secs(q.waited_s)})` : ''}` }])
@@ -1071,6 +1082,11 @@ const GUARD_WORDS: Record<string, string> = {
   handovers: 'handovers without finishing',
 }
 
+// stats.STATS_MODEL_LINES, kept here too: the mod tracks main while wb runs from the user's clone,
+// so an older wb's feed (every model line, or only `models`) must not draw a row per model; and
+// with no line to go by (no task yet), what Optimized, Bench and What helps name (2026-11-21)
+const STATS_SHOWN = 3
+
 // The Stats tab's history as lines (a label in bold, then the text): what the feed holds, each
 // section left out when it has nothing, estimates said as such. A run of days that ended isn't
 // mentioned, only the best (the plan's rule: show what went right, never nag).
@@ -1120,10 +1136,12 @@ export function statsLines(f: Record<string, any> | null, why = ''): { label: st
   if (q?.asked) out.push({ label: 'Questions', text: `${q.asked} asked mid-task` +
     (q.answered ? ` · ${q.answered} answered` : '') })
   // the models OpenCode has now, a wb optimize variant folded under its source, the most recently
-  // used first, the rest on one line (`model_lines`, #638); an older wb's feed: every model
-  const shown: [string, any][] = f.model_lines
+  // used first, the rest on one line (`model_lines`, #638); an older wb's feed: its `models`.
+  // Capped here as well as in wb: a wb from before the cap sends every line (2026-11-21)
+  const all: [string, any][] = f.model_lines
     ? (f.model_lines.lines ?? []).map((m: any) => [String(m.model), m])
     : Object.entries(f.models ?? {})
+  const shown = all.slice(0, STATS_SHOWN), past = all.slice(STATS_SHOWN)
   for (const [model, m] of shown) {
     const trend = spark((m.write_trend ?? []).map((p: number[]) => p[1]))
     const speed = m.speed?.write ? ` · writes ~${Math.round(m.speed.write)} tok/s` : ''
@@ -1134,9 +1152,26 @@ export function statsLines(f: Record<string, any> | null, why = ''): { label: st
       (m.rounds != null ? ` · ${m.rounds} rounds` : '') + (m.minutes != null ? ` · ${m.minutes} min` : '') +
       speed + (trend ? ` ${trend}` : '') + change + (m.claude ? ` · Claude ~${kilo(m.claude)}/task` : '') })
   }
+  // the recent ones past stats.STATS_MODEL_LINES (and past this cap) and the older ones, one row;
+  // labelled "Other models" so the text after it doesn't say "more models" twice (2026-11-21)
   const older = f.model_lines?.older
-  if (older?.models) out.push({ label: 'Older models', text: `${older.models} older model${older.models === 1 ? '' : 's'}: ` +
-    `${older.tasks} task${older.tasks === 1 ? '' : 's'} (wb stats --all)` })
+  const moreModels = (f.model_lines?.more?.models ?? 0) + past.length
+  const moreTasks = (f.model_lines?.more?.tasks ?? 0) + past.reduce((n, [, m]) => n + (Number(m.tasks) || 0), 0)
+  const others = moreModels + (older?.models ?? 0), otherTasks = moreTasks + (older?.tasks ?? 0)
+  if (others) out.push({ label: 'Other models',
+    text: [moreModels ? `${moreModels} more` : '', older?.models ? `${older.models} older` : ''].filter(Boolean).join(' · ') +
+      ` model${others === 1 ? '' : 's'}: ${otherTasks} task${otherTasks === 1 ? '' : 's'} (wb stats --all)` })
+  // Optimized, Bench and What helps name only the models shown above, a line's variants with it,
+  // the rest counted, with where to see them (2026-11-21: 30 models' windows and runs made rows
+  // taller than the screen); no model line yet (no task, or only older ones): the first STATS_SHOWN
+  const ids = shown.length
+    ? new Set<string>(shown.flatMap(([model, m]) => [model, ...(m.variants ?? [])])) : null
+  const pick = <T,>(entries: [string, T][]): [[string, T][], number] => {
+    const kept = entries.filter(([m], i) => (ids ? ids.has(m) : i < STATS_SHOWN))
+    return [kept, entries.length - kept.length]
+  }
+  const counted = (kept: string[], rest: number, report: string) => kept.length
+    ? kept.join(' · ') + (rest ? ` · ${rest} more (${report})` : '') : `${rest} model${rest === 1 ? '' : 's'} (${report})`
   const sized = Object.entries(f.sizes ?? {}) as [string, any][]
   if (sized.length) out.push({ label: 'By size', text: sized.map(([k, v]) => `${k} ${v.tasks} (${v.accepted_pct}%)`).join(' · ') })
   if (f.days?.length) {
@@ -1155,20 +1190,24 @@ export function statsLines(f: Record<string, any> | null, why = ''): { label: st
   const guards = Object.entries(f.guards ?? {}) as [string, number][]
   if (guards.length) out.push({ label: 'What stopped agents', text: guards.sort((a, b) => b[1] - a[1])
     .map(([g, n]) => `${GUARD_WORDS[g] ?? g} ${n}`).join(' · ') })
-  for (const [model, h] of Object.entries(f.helps ?? {}) as [string, any][]) {
-    const said = Object.entries(h).filter(([, v]: any) => v[1]).map(([k, v]: any) => `a ${k === 'smaller' ? 'smaller step' : k} helped ${v[0]} of ${v[1]}`)
-    if (said.length) out.push({ label: `What helps (${model})`, text: said.join(' · ') })
-  }
-  const bench = Object.entries(f.bench ?? {}) as [string, any][]
+  const [helps, helpsRest] = pick(Object.entries(f.helps ?? {}) as [string, any][])
+  const helped = helps.map(([model, h]) => [model, Object.entries(h).filter(([, v]: any) => v[1])
+    .map(([k, v]: any) => `a ${k === 'smaller' ? 'smaller step' : k} helped ${v[0]} of ${v[1]}`)] as [string, string[]])
+    .filter(([, said]) => said.length)
+  helped.forEach(([model, said]) => out.push({ label: `What helps (${model})`, text: said.join(' · ') }))
+  // the rest on a row of their own, not on the last model's, where it read as that model's (2026-11-21);
+  // no text command prints them, the feed does
+  if (helpsRest) out.push({ label: 'What helps', text: `${helped.length ? `${helpsRest} more` : helpsRest} model${helpsRest === 1 ? '' : 's'} (wb stats --json)` })
+  const [bench, benchRest] = pick(Object.entries(f.bench ?? {}) as [string, any][])
   // the newest finished run, and a newer one beside it, never in its place (#570)
   const sofar = (p: any) => `${p.of} of ${p.planned} ${p.running ? 'so far' : 'before it stopped'}` +
     (p.of ? `, ${p.passed} passed` : '')
-  if (bench.length) out.push({ label: 'Bench', text: bench.map(([m, b]) => `${m} ` +
+  if (bench.length || benchRest) out.push({ label: 'Bench', text: counted(bench.map(([m, b]) => `${m} ` +
     [b.run !== undefined ? `${b.passed}/${b.of} (${b.day})` : '', b.partial ? `newer run ${sofar(b.partial)}` : '']
-      .filter(Boolean).join(', ')).join(' · ') })
-  const opt = Object.entries(f.optimized ?? {}) as [string, any][]
-  if (opt.length) out.push({ label: 'Optimized', text: opt.map(([m, o]) => `${m} ${Math.round(o.window / 1024)}K` +
-    (o.spill ? ` (${o.spill}% on the CPU)` : ' all on the GPU')).join(' · ') })
+      .filter(Boolean).join(', ')), benchRest, 'wb bench report') })
+  const [opt, optRest] = pick(Object.entries(f.optimized ?? {}) as [string, any][])
+  if (opt.length || optRest) out.push({ label: 'Optimized', text: counted(opt.map(([m, o]) => `${m} ${Math.round(o.window / 1024)}K` +
+    (o.spill ? ` (${o.spill}% on the CPU)` : ' all on the GPU')), optRest, 'wb optimize report') })
   return out
 }
 

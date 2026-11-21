@@ -15236,6 +15236,39 @@ class Stats(Base):
         self.assertIn("strata/strata", out)
         self.assertNotIn("older model", out)
 
+    def test_thirty_recent_models_give_three_lines_and_the_rest_counted_as_more(self):
+        # the owner, 2026-11-21: a machine with a ton of models drew a line each, and the Stats
+        # tab's menu sat a long scroll below a new user's first look
+        from workbench import stats
+        cfg = json.loads(Path(os.environ["WB_OPENCODE_CONFIG"]).read_text())
+        ids = [f"exp-{i}" for i in range(30)]
+        for k in ids + ["exp-0-64k"]:
+            cfg["provider"]["ollama"]["models"][k] = {"name": k}
+        Path(os.environ["WB_OPENCODE_CONFIG"]).write_text(json.dumps(cfg))
+        # a wb optimize variant that ran nothing yet: its window and bench run are its source's line's
+        Path(os.environ["WB_MODELS"]).write_text(json.dumps({"ollama/exp-0-64k": {"variant_of": "ollama/exp-0"}}))
+        now = time.time()
+        for i, k in enumerate(ids):
+            for _ in range(1 + i % 2):
+                store.append_jsonl(store.home() / "results.jsonl", {
+                    "model": f"ollama/{k}", "size": "trivial", "outcome": "accepted", "ran": True,
+                    "ts": now - (i + 1) * 3600})
+        f = stats.feed(now)
+        self.assertEqual(stats.STATS_MODEL_LINES, 3)
+        self.assertEqual([x["model"] for x in f["model_lines"]["lines"]],
+                         ["ollama/exp-0", "ollama/exp-1", "ollama/exp-2"])     # the newest first
+        self.assertEqual(f["model_lines"]["lines"][0]["variants"], ["ollama/exp-0", "ollama/exp-0-64k"])
+        self.assertEqual(f["model_lines"]["more"], {"models": 27, "tasks": 41})  # 45, 4 on the three shown
+        self.assertNotIn("older", f["model_lines"])
+        self.assertEqual(len(f["models"]), 30)                    # the feed's split stays whole
+        out = run_wb("stats")
+        self.assertIn("ollama/exp-2", out)
+        self.assertNotIn("ollama/exp-3 ", out)
+        self.assertIn("27 more model(s) used in the last 90 days: 41 task(s) (wb stats --all)", out)
+        out = run_wb("stats", "--all")
+        self.assertTrue(all(f"ollama/{k} " in out for k in ids))  # every model, none folded
+        self.assertNotIn("more model", out)
+
     def test_wb_stats_counts_only_real_spec_gap_discards_and_names_tasks_that_never_ran(self):
         # #817: every row the table left out (another model's, one that never ran) was called a
         # discard put down to the spec: 40 on a retired model read "(41 discards ... left out)"
